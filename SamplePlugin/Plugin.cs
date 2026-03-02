@@ -2,6 +2,7 @@ using System;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -38,12 +39,12 @@ public sealed class Plugin : IDalamudPlugin
         // Window with host controls + checkbox
         mainWindow = new MainWindow(
             table,
-            canHost: IsLocalPartyLeader,
-            start: StartTableFromUi,
-            deal: DealFromUi,
-            stop: StopFromUi,
-            getAutoOpen: () => config.AutoOpenUiWhenTableOpens,
-            setAutoOpen: v => { config.AutoOpenUiWhenTableOpens = v; config.Save(); }
+            IsLocalPartyLeader,
+            StartTableFromUi,
+            DealFromUi,
+            StopFromUi,
+            () => config.AutoOpenUiWhenTableOpens,
+            v => { config.AutoOpenUiWhenTableOpens = v; config.Save(); }
         );
 
         windowSystem.AddWindow(mainWindow);
@@ -65,147 +66,66 @@ public sealed class Plugin : IDalamudPlugin
                 "  !bj bet <amount>\n" +
                 "  !bj hit\n" +
                 "  !bj stand\n" +
-                "  !bj leave\n"
+                "  !bj double  (on initial hand if affordable)\n" +
+                "  !bj leave"
         });
 
         ChatGui.ChatMessage += OnChatMessage;
-
-        Print("Ready. Party leader can host: /bj start. Toggle UI with /bj ui.");
     }
 
     public void Dispose()
     {
         ChatGui.ChatMessage -= OnChatMessage;
-
         CommandManager.RemoveHandler("/bj");
+
+        windowSystem.RemoveAllWindows();
 
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleUI;
-
-        windowSystem.RemoveAllWindows();
     }
 
-    private void DrawUI() => windowSystem.Draw();
-    private void ToggleUI() => mainWindow.IsOpen = !mainWindow.IsOpen;
-
-    // ---- UI button actions ----
-    private void StartTableFromUi()
-    {
-        if (!IsLocalPartyLeader())
-        {
-            Print("Host-only mode: you must be party leader to host.");
-            return;
-        }
-
-        table.OpenTableAndDeal();
-        Print(table.LastPublicMessage);
-        table.CopyLastPublicMessageToClipboard();
-        Print("Status copied to clipboard. Paste into /p manually.");
-
-        if (config.AutoOpenUiWhenTableOpens)
-            mainWindow.IsOpen = true;
-    }
-
-    private void DealFromUi()
-    {
-        if (!IsLocalPartyLeader())
-        {
-            Print("Host-only mode: you must be party leader to host.");
-            return;
-        }
-
-        if (!table.TableOpen)
-        {
-            Print("No open table. Use Start first.");
-            return;
-        }
-
-        table.DealNextRound();
-        Print(table.LastPublicMessage);
-        table.CopyLastPublicMessageToClipboard();
-        Print("Status copied to clipboard. Paste into /p manually.");
-    }
-
-    private void StopFromUi()
-    {
-        table.CloseTable();
-        Print("Table closed.");
-    }
-
-    // ---- /bj command handler ----
     private void OnBjCommand(string command, string args)
     {
-        var a = (args ?? string.Empty).Trim();
-        var lower = a.ToLowerInvariant();
+        var argTokens = args.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        if (lower == "ui")
+        if (argTokens.Length == 0)
         {
             ToggleUI();
             return;
         }
 
-        if (lower == "start")
+        var sub = argTokens[0].ToLowerInvariant();
+
+        if (sub == "ui")
         {
-            if (!IsLocalPartyLeader())
-            {
-                Print("Host-only mode: you must be party leader to host.");
-                return;
-            }
-
-            table.OpenTableAndDeal();
-            Print(table.LastPublicMessage);
-            table.CopyLastPublicMessageToClipboard();
-            Print("Status copied to clipboard. Paste into /p manually.");
-
-            if (config.AutoOpenUiWhenTableOpens)
-                mainWindow.IsOpen = true;
-
+            ToggleUI();
             return;
         }
 
-        if (lower == "deal")
+        if (sub == "start")
         {
-            if (!IsLocalPartyLeader())
-            {
-                Print("Host-only mode: you must be party leader to host.");
-                return;
-            }
-
-            if (!table.TableOpen)
-            {
-                Print("No open table. Use /bj start.");
-                return;
-            }
-
-            table.DealNextRound();
-            Print(table.LastPublicMessage);
-            table.CopyLastPublicMessageToClipboard();
-            Print("Status copied to clipboard. Paste into /p manually.");
+            StartTableFromUi();
             return;
         }
 
-        if (lower == "stop")
+        if (sub == "deal")
         {
-            table.CloseTable();
-            Print("Table closed.");
+            DealFromUi();
             return;
         }
 
-        if (lower == "status" || lower == "")
+        if (sub == "stop")
         {
-            if (!table.TableOpen)
-            {
-                Print("No open table. Use /bj start.");
-                return;
-            }
-
-            Print(table.LastPublicMessage);
-            table.CopyLastPublicMessageToClipboard();
-            Print("Status copied to clipboard. Paste into /p manually.");
+            StopFromUi();
             return;
         }
 
-        Print($"Unknown /bj argument: {args}");
+        if (sub == "status")
+        {
+            table.CopyPublicMessageAsPartyCommandToClipboard();
+            ChatGui.Print("Status copied to clipboard as /p command.");
+            return;
+        }
     }
 
     private void OnChatMessage(XivChatType type, int timestamp, ref SeString sender, ref SeString message, ref bool isHandled)
@@ -216,55 +136,85 @@ public sealed class Plugin : IDalamudPlugin
         if (!table.TableOpen)
             return;
 
-        // Host-only mode: only process party commands if YOU are leader.
         if (!IsLocalPartyLeader())
             return;
 
-        var senderName = sender.TextValue?.Trim();
-        var text = message.TextValue?.Trim();
+        var senderName = sender.GetPayloadText<PayloadType.Player>()?.Text ?? ""; // Simplified, assume player payload
 
-        if (string.IsNullOrEmpty(senderName) || string.IsNullOrEmpty(text))
+        if (string.IsNullOrEmpty(senderName))
             return;
 
-        if (!text.StartsWith("!bj", StringComparison.OrdinalIgnoreCase))
+        var msgText = message.TextValue.Trim().ToLowerInvariant();
+
+        if (!msgText.StartsWith("!bj "))
             return;
 
-        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        var sub = parts.Length >= 2 ? parts[1].ToLowerInvariant() : "";
+        var cmd = msgText.Substring(4).Trim();
+        var tokens = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        bool changed = sub switch
+        if (tokens.Length == 0)
+            return;
+
+        var subCmd = tokens[0];
+
+        bool handled = subCmd switch
         {
             "join" => table.Join(senderName),
             "leave" => table.Leave(senderName),
-            "bet" => table.Bet(senderName, parts.Length >= 3 ? parts[2] : null),
+            "bet" => table.Bet(senderName, tokens.Length > 1 ? tokens[1] : null),
             "hit" => table.Hit(senderName),
             "stand" => table.Stand(senderName),
+            "double" => table.Double(senderName),
             _ => false
         };
 
-        if (!changed)
-            return;
-
-        Print(table.LastPublicMessage);
-        table.CopyLastPublicMessageToClipboard();
-        Print("Updated status copied to clipboard. Paste into /p manually.");
+        if (handled)
+        {
+            isHandled = true; // Optional: suppress the message if desired
+            table.CopyPublicMessageAsPartyCommandToClipboard(); // Auto-copy update
+        }
     }
 
     private bool IsLocalPartyLeader()
     {
-        var me = ClientState.LocalPlayer?.Name.TextValue;
-        if (string.IsNullOrWhiteSpace(me))
+        if (ClientState.LocalPlayer == null)
             return false;
 
-        // Solo testing
-        if (PartyList == null || PartyList.Length == 0)
-            return true;
+        if (PartyList.Length == 0)
+            return true; // Solo is leader
 
-        // Simple heuristic: party index 0 is leader
-        var leaderName = PartyList[0]?.Name?.TextValue;
-        return !string.IsNullOrWhiteSpace(leaderName) &&
-               string.Equals(leaderName, me, StringComparison.OrdinalIgnoreCase);
+        var leader = PartyList[0]; // First is leader
+        return leader.Name == ClientState.LocalPlayer.Name;
     }
 
-    private static void Print(string msg) => ChatGui.Print(msg, "BJ");
+    private void StartTableFromUi()
+    {
+        if (!IsLocalPartyLeader())
+            return;
+
+        table.OpenTableAndDeal();
+
+        if (config.AutoOpenUiWhenTableOpens)
+            mainWindow.IsOpen = true;
+    }
+
+    private void DealFromUi()
+    {
+        if (!IsLocalPartyLeader())
+            return;
+
+        table.DealNextRound();
+    }
+
+    private void StopFromUi()
+    {
+        if (!IsLocalPartyLeader())
+            return;
+
+        table.CloseTable();
+    }
+
+    private void DrawUI() => windowSystem.Draw();
+
+    private void ToggleUI() => mainWindow.Toggle();
 }
