@@ -1,0 +1,10 @@
+{
+  "Author": "Your Name",
+  "Name": "Party Blackjack",
+  "Punchline": "Play Blackjack in your FFXIV party!",
+  "Description": "Host Blackjack games via party chat. Extended with double down.",
+  "InternalName": "PartyBlackjack",
+  "AssemblyVersion": "1.0.0.0",
+  "ApplicableVersion": "any",
+  "Tags": [ "blackjack", "game", "party" ]
+}
