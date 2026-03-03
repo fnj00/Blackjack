@@ -1,7 +1,7 @@
 using System;
+using System.Linq;
 using Dalamud.Game.Command;
 using Dalamud.Game.Text;
-using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
@@ -20,32 +20,19 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
 
     private readonly BlackjackTable table;
-
-    // Config
     private readonly Configuration config;
-
-    // UI
     private readonly WindowSystem windowSystem = new("PartyBlackjackWindows");
     private readonly MainWindow mainWindow;
 
     public Plugin()
     {
-        // Load config
         config = (PluginInterface.GetPluginConfig() as Configuration) ?? new Configuration();
         config.Initialize(PluginInterface);
 
-        table = new BlackjackTable(IsLocalPartyLeader);
+        table = new BlackjackTable(IsLocalPartyLeader, msg => ChatGui.SendMessage(XivChatType.Party, msg));
 
-        // Window with host controls + checkbox
-        mainWindow = new MainWindow(
-            table,
-            IsLocalPartyLeader,
-            StartTableFromUi,
-            DealFromUi,
-            StopFromUi,
-            () => config.AutoOpenUiWhenTableOpens,
-            v => { config.AutoOpenUiWhenTableOpens = v; config.Save(); }
-        );
+        mainWindow = new MainWindow(table, IsLocalPartyLeader, StartTableFromUi, DealFromUi, StopFromUi,
+            () => config.AutoOpenUiWhenTableOpens, v => { config.AutoOpenUiWhenTableOpens = v; config.Save(); });
 
         windowSystem.AddWindow(mainWindow);
 
@@ -54,20 +41,14 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler("/bj", new CommandInfo(OnBjCommand)
         {
-            HelpMessage =
-                "Blackjack host commands:\n" +
-                "  /bj start   - open table + deal round\n" +
-                "  /bj deal    - deal next round (table persists)\n" +
-                "  /bj stop    - close table\n" +
-                "  /bj status  - show status (copies to clipboard)\n" +
-                "  /bj ui      - toggle window\n" +
-                "\nParty commands (type in Party chat):\n" +
-                "  !bj join\n" +
-                "  !bj bet <amount>\n" +
-                "  !bj hit\n" +
-                "  !bj stand\n" +
-                "  !bj double  (on initial hand if affordable)\n" +
-                "  !bj leave"
+            HelpMessage = "Blackjack host commands (auto-announces to party):\n" +
+                          "  /bj start   - open table + deal round\n" +
+                          "  /bj deal    - deal next round\n" +
+                          "  /bj stop    - close table\n" +
+                          "  /bj status  - copy current status to clipboard\n" +
+                          "  /bj ui      - toggle window\n" +
+                          "\nPlayers: !bj join/bet<hit/stand/double>/leave in party chat\n" +
+                          "Host: Use UI buttons to act for players (auto-announces draws)."
         });
 
         ChatGui.ChatMessage += OnChatMessage;
@@ -77,9 +58,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         ChatGui.ChatMessage -= OnChatMessage;
         CommandManager.RemoveHandler("/bj");
-
         windowSystem.RemoveAllWindows();
-
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleUI;
     }
@@ -96,64 +75,51 @@ public sealed class Plugin : IDalamudPlugin
 
         var sub = argTokens[0].ToLowerInvariant();
 
-        if (sub == "ui")
+        switch (sub)
         {
-            ToggleUI();
-            return;
-        }
-
-        if (sub == "start")
-        {
-            StartTableFromUi();
-            return;
-        }
-
-        if (sub == "deal")
-        {
-            DealFromUi();
-            return;
-        }
-
-        if (sub == "stop")
-        {
-            StopFromUi();
-            return;
-        }
-
-        if (sub == "status")
-        {
-            table.CopyPublicMessageAsPartyCommandToClipboard();
-            ChatGui.Print("Status copied to clipboard as /p command.");
-            return;
+            case "ui":
+                ToggleUI();
+                break;
+            case "start":
+                StartTableFromUi();
+                break;
+            case "deal":
+                DealFromUi();
+                break;
+            case "stop":
+                StopFromUi();
+                break;
+            case "status":
+                table.CopyPublicMessageAsPartyCommandToClipboard();
+                ChatGui.Print("Status copied to clipboard (/p command).");
+                break;
         }
     }
 
     private void OnChatMessage(XivChatType type, int timestamp, ref SeString sender, ref SeString message, ref bool isHandled)
     {
-        if (type != XivChatType.Party)
-            return;
+        if (type != XivChatType.Party) return;
+        if (!table.TableOpen) return;
+        if (!IsLocalPartyLeader()) return;
 
-        if (!table.TableOpen)
-            return;
-
-        if (!IsLocalPartyLeader())
-            return;
-
-        var senderName = sender.GetPayloadText<PayloadType.Player>()?.Text ?? ""; // Simplified, assume player payload
-
-        if (string.IsNullOrEmpty(senderName))
-            return;
+        string? senderName = null;
+        foreach (var payload in sender.Payloads)
+        {
+            if (payload is PlayerPayload pp)
+            {
+                senderName = pp.PlayerName;
+                break;
+            }
+        }
+        if (string.IsNullOrEmpty(senderName)) return;
 
         var msgText = message.TextValue.Trim().ToLowerInvariant();
+        if (!msgText.StartsWith("!bj ")) return;
 
-        if (!msgText.StartsWith("!bj "))
-            return;
-
-        var cmd = msgText.Substring(4).Trim();
+        var cmd = msgText[4..].Trim();
         var tokens = cmd.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        if (tokens.Length == 0)
-            return;
+        if (tokens.Length == 0) return;
 
         var subCmd = tokens[0];
 
@@ -169,52 +135,20 @@ public sealed class Plugin : IDalamudPlugin
         };
 
         if (handled)
-        {
-            isHandled = true; // Optional: suppress the message if desired
-            table.CopyPublicMessageAsPartyCommandToClipboard(); // Auto-copy update
-        }
+            isHandled = true;
     }
 
     private bool IsLocalPartyLeader()
     {
-        if (ClientState.LocalPlayer == null)
-            return false;
-
-        if (PartyList.Length == 0)
-            return true; // Solo is leader
-
-        var leader = PartyList[0]; // First is leader
-        return leader.Name == ClientState.LocalPlayer.Name;
+        if (ClientState.LocalPlayer == null) return false;
+        if (PartyList.Length == 0) return true;
+        return PartyList[0].Name == ClientState.LocalPlayer.Name;
     }
 
-    private void StartTableFromUi()
-    {
-        if (!IsLocalPartyLeader())
-            return;
-
-        table.OpenTableAndDeal();
-
-        if (config.AutoOpenUiWhenTableOpens)
-            mainWindow.IsOpen = true;
-    }
-
-    private void DealFromUi()
-    {
-        if (!IsLocalPartyLeader())
-            return;
-
-        table.DealNextRound();
-    }
-
-    private void StopFromUi()
-    {
-        if (!IsLocalPartyLeader())
-            return;
-
-        table.CloseTable();
-    }
+    private void StartTableFromUi() => table.OpenTableAndDeal();
+    private void DealFromUi() => table.DealNextRound();
+    private void StopFromUi() => table.CloseTable();
 
     private void DrawUI() => windowSystem.Draw();
-
     private void ToggleUI() => mainWindow.Toggle();
 }
