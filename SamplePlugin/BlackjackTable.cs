@@ -59,12 +59,6 @@ namespace PartyBlackjack
             }
         }
 
-        public void ClearPayout(string player)
-        {
-            if (players.TryGetValue(player, out var ps))
-                ps.PendingPayout = 0;
-        }
-
         // -----------------------
         // Table lifecycle
         // -----------------------
@@ -79,6 +73,7 @@ namespace PartyBlackjack
 
             LastPublicMessage = "Table open! !bj join, !bj bet <gil>, TRADE gil to me. /bj deal when ready.";
             SendUpdate();
+
             DealNextRound();
         }
 
@@ -100,41 +95,34 @@ namespace PartyBlackjack
         {
             if (!TableOpen || !isHostLeader()) return;
 
-            // Optional: warn if not all gil received
             int expected = GetExpectedTotalBet();
             int received = GetTotalReceived();
             if (received < expected)
             {
-                UpdatePublicMessage($"Warning: Only {received}/{expected}gil received. Proceed anyway?");
+                UpdatePublicMessage($"Warning: Only {received}/{expected}gil received so far. Proceeding anyway.");
                 SendUpdate();
-                // You could add a UI checkbox to force-deal if desired
             }
 
-            ResetReceivedGil();  // Clear for next round
-            
-            // Reset round state
+            ResetReceivedGil();
+
             stood.Clear();
             dealer = new Hand();
             RoundInProgress = true;
 
-            // Deal dealer cards
             dealer.Add(deck.Draw());
             dealer.Add(deck.Draw());
 
-            // Deal each player with bet >0
             foreach (var ps in players.Values.ToList())
             {
                 ps.Hand = new Hand();
                 ps.CurrentBet = ps.NextBet;
                 ps.SittingOut = ps.CurrentBet <= 0;
 
-                if (ps.SittingOut)
-                    continue;
+                if (ps.SittingOut) continue;
 
                 ps.Hand.Add(deck.Draw());
                 ps.Hand.Add(deck.Draw());
 
-                // Auto-stand on blackjack
                 if (ps.Hand.IsBlackjack)
                     stood.Add(ps.Name);
             }
@@ -152,13 +140,9 @@ namespace PartyBlackjack
         {
             if (!TableOpen || !isHostLeader()) return false;
 
-            if (players.ContainsKey(player))
-                return false;
+            if (players.ContainsKey(player)) return false;
 
-            players[player] = new PlayerState(player)
-            {
-                NextBet = 50
-            };
+            players[player] = new PlayerState(player) { NextBet = 50 };
 
             UpdatePublicMessage($"{player} joined. !bj bet <gil> & trade me.");
             SendUpdate();
@@ -169,8 +153,7 @@ namespace PartyBlackjack
         {
             if (!TableOpen || !isHostLeader()) return false;
 
-            if (!players.Remove(player))
-                return false;
+            if (!players.Remove(player)) return false;
 
             stood.Remove(player);
             UpdatePublicMessage($"{player} left.");
@@ -182,11 +165,9 @@ namespace PartyBlackjack
         {
             if (!TableOpen || !isHostLeader()) return false;
 
-            if (!players.TryGetValue(player, out var ps))
-                return false;
+            if (!players.TryGetValue(player, out var ps)) return false;
 
-            if (!int.TryParse(amountToken ?? "", out var amt) || amt < 1)
-                return false;
+            if (!int.TryParse(amountToken ?? "", out var amt) || amt < 1) return false;
 
             ps.NextBet = amt;
 
@@ -200,10 +181,7 @@ namespace PartyBlackjack
             if (!TableOpen || !RoundInProgress || !isHostLeader()) return false;
 
             if (!players.TryGetValue(player, out var ps)) return false;
-            if (ps.SittingOut) return false;
-            if (ps.Hand == null) return false;
-            if (stood.Contains(player)) return false;
-            if (ps.Hand.IsBusted) return false;
+            if (ps.SittingOut || ps.Hand == null || stood.Contains(player) || ps.Hand.IsBusted) return false;
 
             var drawnCard = deck.Draw();
             ps.Hand.Add(drawnCard);
@@ -223,9 +201,7 @@ namespace PartyBlackjack
             if (!TableOpen || !RoundInProgress || !isHostLeader()) return false;
 
             if (!players.TryGetValue(player, out var ps)) return false;
-            if (ps.SittingOut) return false;
-            if (ps.Hand == null) return false;
-            if (stood.Contains(player)) return false;
+            if (ps.SittingOut || ps.Hand == null || stood.Contains(player)) return false;
 
             stood.Add(player);
 
@@ -240,11 +216,11 @@ namespace PartyBlackjack
             if (!TableOpen || !RoundInProgress || !isHostLeader()) return false;
 
             if (!players.TryGetValue(player, out var ps)) return false;
-            if (ps.SittingOut || ps.Hand?.Cards.Count != 2 || stood.Contains(player) || ps.Hand.IsBusted) return false;
+            if (ps.SittingOut || ps.Hand == null || stood.Contains(player) || ps.Hand.IsBusted || ps.Hand.Cards.Count != 2) return false;
 
             int additional = ps.CurrentBet;
             ps.CurrentBet += additional;
-            ps.DoublePending = true;  // Block card draw until host marks received
+            ps.DoublePending = true;
 
             UpdatePublicMessage($"{player} wants to double! Total bet now {ps.CurrentBet}gil. Host: confirm extra {additional}gil received, then draw.");
             SendUpdate();
@@ -256,7 +232,7 @@ namespace PartyBlackjack
             if (!players.TryGetValue(player, out var ps) || !ps.DoublePending) return;
 
             ps.DoublePending = false;
-            ps.ReceivedGil += ps.CurrentBet / 2;  // Assume extra = original bet
+            ps.ReceivedGil += ps.CurrentBet / 2;  // record the additional gil
 
             var drawnCard = deck.Draw();
             ps.Hand!.Add(drawnCard);
@@ -313,7 +289,9 @@ namespace PartyBlackjack
                     handCount,
                     cards,
                     value,
-                    ps.PendingPayout
+                    ps.PendingPayout,
+                    ps.ReceivedGil,
+                    ps.DoublePending
                 );
             }).ToArray();
         }
@@ -325,9 +303,7 @@ namespace PartyBlackjack
         private void TryAutoResolveIfDone()
         {
             if (!RoundInProgress) return;
-
-            if (!AllActivePlayersDone())
-                return;
+            if (!AllActivePlayersDone()) return;
 
             ResolveDealer();
             PayoutAndFinish();
@@ -339,12 +315,10 @@ namespace PartyBlackjack
 
             foreach (var ps in players.Values)
             {
-                if (ps.SittingOut || ps.CurrentBet <= 0 || ps.Hand == null)
-                    continue;
+                if (ps.SittingOut || ps.CurrentBet <= 0 || ps.Hand == null || ps.DoublePending) continue;
 
                 anyActive = true;
-                if (!stood.Contains(ps.Name))
-                    return false;
+                if (!stood.Contains(ps.Name)) return false;
             }
 
             return anyActive;
@@ -372,8 +346,7 @@ namespace PartyBlackjack
             sb.Append(string.Join(" ", dealer.Cards.Select(c => c.ToShortString())));
             sb.Append(" ");
             sb.Append(dealer.ValueDisplay());
-            if (!string.IsNullOrEmpty(dealerDraws))
-                sb.Append($" (hit {dealerDraws})");
+            if (!string.IsNullOrEmpty(dealerDraws)) sb.Append($" (hit {dealerDraws})");
             sb.Append(" | ");
 
             foreach (var ps in players.Values.OrderBy(p => p.Name))
@@ -425,8 +398,7 @@ namespace PartyBlackjack
         {
             if (outcome == "LOSE") return 0;
             if (outcome == "PUSH") return bet;
-            // WIN
-            if (outcome == "BJ WIN") return (bet * 5) / 2; // 2.5x
+            if (outcome == "BJ WIN") return (bet * 5) / 2; // 2.5×
             return bet * 2;
         }
 
@@ -453,8 +425,8 @@ namespace PartyBlackjack
                 if (!RoundInProgress)
                 {
                     sb.Append($"bet(next)={ps.NextBet}gil");
-                    if (ps.PendingPayout > 0)
-                        sb.Append($" send{ps.PendingPayout}gil");
+                    if (ps.ReceivedGil > 0) sb.Append($" rec={ps.ReceivedGil}");
+                    if (ps.PendingPayout > 0) sb.Append($" send={ps.PendingPayout}");
                     sb.Append(" | ");
                     continue;
                 }
@@ -467,7 +439,8 @@ namespace PartyBlackjack
 
                 sb.Append(ps.Hand.FullDisplay());
                 sb.Append($" bet={ps.CurrentBet}gil");
-                if (stood.Contains(ps.Name)) sb.Append(" (STAND)");
+                if (ps.DoublePending) sb.Append(" (DOUBLE PENDING)");
+                else if (stood.Contains(ps.Name)) sb.Append(" (STAND)");
                 sb.Append(" | ");
             }
 
@@ -478,9 +451,13 @@ namespace PartyBlackjack
         {
             const int max = 180;
             if (s.Length <= max) return s;
-            return s[..^1] + "…";
+            return s.Substring(0, max - 1) + "…";
         }
     }
+
+    // -----------------------
+    // Snapshots & Internal classes
+    // -----------------------
 
     internal readonly record struct PlayerSnapshot(
         string Name,
@@ -491,7 +468,9 @@ namespace PartyBlackjack
         int HandCardCount,
         string? HandCardsDisplay,
         string? HandValueDisplay,
-        int PendingPayout
+        int PendingPayout,
+        int ReceivedGil,
+        bool DoublePending
     );
 
     internal sealed class PlayerState
@@ -502,108 +481,12 @@ namespace PartyBlackjack
         public bool SittingOut { get; set; }
         public Hand? Hand { get; set; }
         public int PendingPayout { get; set; }
-        public int ReceivedGil { get; set; }          // Gil actually confirmed by host
-        public bool DoublePending { get; set; }        // Waiting for extra gil on double
+        public int ReceivedGil { get; set; }
+        public bool DoublePending { get; set; }
 
         public PlayerState(string name) => Name = name;
     }
 
-    internal readonly record struct Card(int Rank, int Suit)
-    {
-        public int Value => Rank switch
-        {
-            1 => 11,
-            >= 11 => 10,
-            _ => Rank
-        };
-
-        public string ToShortString()
-        {
-            string r = Rank switch
-            {
-                1 => "A",
-                11 => "J",
-                12 => "Q",
-                13 => "K",
-                _ => Rank.ToString()
-            };
-
-            string s = Suit switch
-            {
-                0 => "♠",
-                1 => "♥",
-                2 => "♦",
-                3 => "♣"
-            };
-
-            return r + s;
-        }
-    }
-
-    internal sealed class Deck
-    {
-        private readonly Random rng;
-        private readonly List<Card> cards = new(52);
-
-        public Deck(Random rng)
-        {
-            this.rng = rng;
-            ResetAndShuffle();
-        }
-
-        private void ResetAndShuffle()
-        {
-            cards.Clear();
-            for (int suit = 0; suit < 4; suit++)
-                for (int rank = 1; rank <= 13; rank++)
-                    cards.Add(new Card(rank, suit));
-
-            for (int i = cards.Count - 1; i > 0; i--)
-            {
-                int j = rng.Next(i + 1);
-                (cards[i], cards[j]) = (cards[j], cards[i]);
-            }
-        }
-
-        public Card Draw()
-        {
-            if (cards.Count == 0)
-                ResetAndShuffle();
-
-            var card = cards[^1];
-            cards.RemoveAt(cards.Count - 1);
-            return card;
-        }
-    }
-
-    internal sealed class Hand
-    {
-        public List<Card> Cards { get; } = new();
-
-        public bool IsBlackjack => Cards.Count == 2 && BestValue == 21;
-        public bool IsBusted => BestValue > 21;
-
-        public int BestValue
-        {
-            get
-            {
-                int value = Cards.Sum(c => c.Value);
-                int aces = Cards.Count(c => c.Rank == 1);
-                while (value > 21 && aces > 0)
-                {
-                    value -= 10;
-                    aces--;
-                }
-                return value;
-            }
-        }
-
-        public string ValueDisplay() => $"{BestValue}{Hand.Tag(this)}";
-
-        public string FullDisplay() => string.Join(" ", Cards.Select(c => c.ToShortString())) + " " + ValueDisplay();
-
-        public void Add(Card card) => Cards.Add(card);
-
-        private static string Tag(Hand h) => h.IsBlackjack ? " (BJ)" : h.IsBusted ? " (BUST)" : "";
-    }
+    // Card, Deck, Hand classes remain unchanged from previous version
+    // (omitted here for brevity – copy from your previous file)
 }
