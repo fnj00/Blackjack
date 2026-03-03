@@ -30,7 +30,7 @@ namespace PartyBlackjack
 
             SizeConstraints = new WindowSizeConstraints
             {
-                MinimumSize = new Vector2(500, 350),
+                MinimumSize = new Vector2(520, 380),
                 MaximumSize = new Vector2(1000, 1000)
             };
         }
@@ -52,15 +52,25 @@ namespace PartyBlackjack
             // Host controls
             bool host = canHost();
             if (!host)
-                ImGui.TextDisabled("Must be party leader for host controls.");
+                ImGui.TextDisabled("Must be party leader.");
 
             using var disabledHost = new DisabledScope(!host);
             if (ImGui.Button("Start Table")) start();
             ImGui.SameLine();
             using var disabledTable = new DisabledScope(!table.TableOpen);
-            if (ImGui.Button("Deal Round")) deal();
+            if (ImGui.Button("Deal Round")) 
+            {
+                deal();
+            }
             ImGui.SameLine();
             if (ImGui.Button("Stop Table")) stop();
+
+            ImGui.SameLine(0, 20);
+            if (table.TableOpen)
+            {
+                int expected = table.GetExpectedTotalBet();
+                ImGui.Text($"Expected gil: {expected}");
+            }
 
             ImGui.Separator();
 
@@ -69,7 +79,7 @@ namespace PartyBlackjack
             ImGui.SameLine();
             if (ImGui.Button("Copy /p Status")) table.CopyPublicMessageAsPartyCommandToClipboard();
             ImGui.SameLine();
-            ImGui.TextDisabled($"({table.LastPublicMessage.Length}/180 chars)");
+            ImGui.TextDisabled($"({table.LastPublicMessage.Length}/180)");
 
             ImGui.Separator();
 
@@ -82,7 +92,6 @@ namespace PartyBlackjack
             // Players
             ImGui.Text("Players:");
             var players = table.GetPlayersSnapshot()
-                .Where(p => !string.IsNullOrEmpty(p.HandCardsDisplay) || p.CurrentBet > 0 || p.NextBet > 0)
                 .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
@@ -94,37 +103,49 @@ namespace PartyBlackjack
 
             foreach (var p in players)
             {
-                var header = new StringBuilder(p.Name);
-                header.Append($" | Chips: {p.Chips} | Next: {p.NextBet}");
+                var header = new StringBuilder($"{p.Name} | Next: {p.NextBet}gil");
                 if (table.RoundInProgress && p.CurrentBet > 0)
-                    header.Append($" | Bet: {p.CurrentBet}");
-
-                if (p.SittingOut) header.Append(" | OUT");
-                if (p.Stand) header.Append(" | STAND");
+                    header.Append($" | Bet: {p.CurrentBet}gil");
+                if (p.PendingPayout > 0)
+                    header.Append($" | Send: {p.PendingPayout}gil");
+                if (p.SittingOut)
+                    header.Append(" | OUT");
+                if (p.Stand)
+                    header.Append(" | STAND");
 
                 ImGui.Text(header.ToString());
 
                 DrawHandBlock(p.HandCardsDisplay ?? "(no hand)", p.HandValueDisplay ?? "");
 
-                // Action buttons (host plays for players)
+                // Action buttons (host for players)
                 if (table.RoundInProgress && !p.SittingOut && p.CurrentBet > 0 && !p.Stand)
                 {
                     ImGui.Spacing();
-                    if (ImGui.Button($"Hit##{p.Name}"))
+                    if (ImGui.Button("Hit##Hit" + p.Name))
                         table.Hit(p.Name);
-
                     ImGui.SameLine();
-                    if (ImGui.Button($"Stand##{p.Name}"))
+                    if (ImGui.Button("Stand##Stand" + p.Name))
                         table.Stand(p.Name);
-
                     ImGui.SameLine();
-                    bool canDouble = p.HandCardCount == 2 && p.Chips >= p.CurrentBet * 2;
+                    bool canDouble = p.HandCardCount == 2;
                     using var ddDisabled = new DisabledScope(!canDouble);
-                    if (ImGui.Button($"Double##{p.Name}"))
+                    if (ImGui.Button("Double##Double" + p.Name))
                         table.Double(p.Name);
-
                     ImGui.SameLine(0.0f, 5.0f);
-                    ImGui.TextDisabled(canDouble ? "" : "(chips)");
+                    ImGui.TextDisabled(canDouble ? "" : "(initial hand only)");
+                }
+
+                // Payout actions
+                if (!table.RoundInProgress && p.PendingPayout > 0)
+                {
+                    ImGui.Spacing();
+                    ImGui.TextColored(new Vector4(1f, 1f, 0f, 1f), $"Send {p.PendingPayout}gil:");
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Trade##T{p.Name}"))
+                        ImGuiNET.ImGui.SetClipboardText($"/trade {p.Name}");
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Sent##S{p.Name}"))
+                        table.ClearPayout(p.Name);
                 }
 
                 ImGui.Spacing();
