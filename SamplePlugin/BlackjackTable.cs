@@ -487,6 +487,102 @@ namespace PartyBlackjack
         public PlayerState(string name) => Name = name;
     }
 
-    // Card, Deck, Hand classes remain unchanged from previous version
-    // (omitted here for brevity – copy from your previous file)
+    internal readonly record struct Card(int Rank, int Suit)
+    {
+        public int Value => Rank switch
+        {
+            1 => 11,
+            >= 11 => 10,
+            _ => Rank
+        };
+
+        public string ToShortString()
+        {
+            string r = Rank switch
+            {
+                1 => "A",
+                11 => "J",
+                12 => "Q",
+                13 => "K",
+                _ => Rank.ToString()
+            };
+
+            string s = Suit switch
+            {
+                0 => "♠",
+                1 => "♥",
+                2 => "♦",
+                3 => "♣"
+            };
+
+            return r + s;
+        }
+    }
+
+    internal sealed class Deck
+    {
+        private readonly Random rng;
+        private readonly List<Card> cards = new(52);
+
+        public Deck(Random rng)
+        {
+            this.rng = rng;
+            ResetAndShuffle();
+        }
+
+        private void ResetAndShuffle()
+        {
+            cards.Clear();
+            for (int suit = 0; suit < 4; suit++)
+                for (int rank = 1; rank <= 13; rank++)
+                    cards.Add(new Card(rank, suit));
+
+            for (int i = cards.Count - 1; i > 0; i--)
+            {
+                int j = rng.Next(i + 1);
+                (cards[i], cards[j]) = (cards[j], cards[i]);
+            }
+        }
+
+        public Card Draw()
+        {
+            if (cards.Count == 0)
+                ResetAndShuffle();
+
+            var card = cards[^1];
+            cards.RemoveAt(cards.Count - 1);
+            return card;
+        }
+    }
+
+    internal sealed class Hand
+    {
+        public List<Card> Cards { get; } = new();
+
+        public bool IsBlackjack => Cards.Count == 2 && BestValue == 21;
+        public bool IsBusted => BestValue > 21;
+
+        public int BestValue
+        {
+            get
+            {
+                int value = Cards.Sum(c => c.Value);
+                int aces = Cards.Count(c => c.Rank == 1);
+                while (value > 21 && aces > 0)
+                {
+                    value -= 10;
+                    aces--;
+                }
+                return value;
+            }
+        }
+
+        public string ValueDisplay() => $"{BestValue}{Hand.Tag(this)}";
+
+        public string FullDisplay() => string.Join(" ", Cards.Select(c => c.ToShortString())) + " " + ValueDisplay();
+
+        public void Add(Card card) => Cards.Add(card);
+
+        private static string Tag(Hand h) => h.IsBlackjack ? " (BJ)" : h.IsBusted ? " (BUST)" : "";
+    }
 }
