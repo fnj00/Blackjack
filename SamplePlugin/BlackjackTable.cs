@@ -40,6 +40,25 @@ namespace PartyBlackjack
 
         public int GetExpectedTotalBet() => players.Values.Sum(ps => ps.NextBet);
 
+        public int GetTotalReceived() => players.Values.Sum(ps => ps.ReceivedGil);
+
+        public void MarkGilReceived(string player, int amount)
+        {
+            if (!players.TryGetValue(player, out var ps)) return;
+            ps.ReceivedGil += amount;
+            UpdatePublicMessage($"{player} gil received (+{amount}). Total received: {GetTotalReceived()}gil");
+            SendUpdate();
+        }
+
+        public void ResetReceivedGil()
+        {
+            foreach (var ps in players.Values)
+            {
+                ps.ReceivedGil = 0;
+                ps.DoublePending = false;
+            }
+        }
+
         public void ClearPayout(string player)
         {
             if (players.TryGetValue(player, out var ps))
@@ -81,6 +100,18 @@ namespace PartyBlackjack
         {
             if (!TableOpen || !isHostLeader()) return;
 
+            // Optional: warn if not all gil received
+            int expected = GetExpectedTotalBet();
+            int received = GetTotalReceived();
+            if (received < expected)
+            {
+                UpdatePublicMessage($"Warning: Only {received}/{expected}gil received. Proceed anyway?");
+                SendUpdate();
+                // You could add a UI checkbox to force-deal if desired
+            }
+
+            ResetReceivedGil();  // Clear for next round
+            
             // Reset round state
             stood.Clear();
             dealer = new Hand();
@@ -209,24 +240,32 @@ namespace PartyBlackjack
             if (!TableOpen || !RoundInProgress || !isHostLeader()) return false;
 
             if (!players.TryGetValue(player, out var ps)) return false;
-            if (ps.SittingOut) return false;
-            if (ps.Hand == null) return false;
-            if (stood.Contains(player)) return false;
-            if (ps.Hand.IsBusted) return false;
-            if (ps.Hand.Cards.Count != 2) return false;
+            if (ps.SittingOut || ps.Hand?.Cards.Count != 2 || stood.Contains(player) || ps.Hand.IsBusted) return false;
 
             int additional = ps.CurrentBet;
             ps.CurrentBet += additional;
+            ps.DoublePending = true;  // Block card draw until host marks received
+
+            UpdatePublicMessage($"{player} wants to double! Total bet now {ps.CurrentBet}gil. Host: confirm extra {additional}gil received, then draw.");
+            SendUpdate();
+            return true;
+        }
+
+        public void ConfirmDoubleGilReceived(string player)
+        {
+            if (!players.TryGetValue(player, out var ps) || !ps.DoublePending) return;
+
+            ps.DoublePending = false;
+            ps.ReceivedGil += ps.CurrentBet / 2;  // Assume extra = original bet
 
             var drawnCard = deck.Draw();
-            ps.Hand.Add(drawnCard);
+            ps.Hand!.Add(drawnCard);
             stood.Add(player);
 
             string drawnStr = drawnCard.ToShortString();
-            UpdatePublicMessage($"{player} doubles! (total {ps.CurrentBet}gil, send addl {additional}gil) draws {drawnStr}!");
+            UpdatePublicMessage($"{player} double confirmed (extra gil received), draws {drawnStr}!");
             TryAutoResolveIfDone();
             SendUpdate();
-            return true;
         }
 
         // -----------------------
@@ -458,11 +497,13 @@ namespace PartyBlackjack
     internal sealed class PlayerState
     {
         public string Name { get; }
-        public int NextBet { get; set; }
+        public int NextBet { get; set; } = 50;
         public int CurrentBet { get; set; }
         public bool SittingOut { get; set; }
         public Hand? Hand { get; set; }
         public int PendingPayout { get; set; }
+        public int ReceivedGil { get; set; }          // Gil actually confirmed by host
+        public bool DoublePending { get; set; }        // Waiting for extra gil on double
 
         public PlayerState(string name) => Name = name;
     }
