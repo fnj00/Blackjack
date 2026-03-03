@@ -41,10 +41,18 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler("/bj", new CommandInfo(OnBjCommand)
         {
-            HelpMessage = "Host: /bj start/deal/stop/ui/status\n" +
-                          "Players: !bj join/bet<amt>/hit/stand/double/leave (party chat)\n" +
-                          "REAL GIL: Announce bet, trade gil to host pre-deal. Double: trade addl gil.\n" +
-                          "Host trades payouts post-round."
+            HelpMessage = "Host commands:\n" +
+                          "  /bj start   - open table\n" +
+                          "  /bj deal    - deal next round (after gil trades)\n" +
+                          "  /bj stop    - close table\n" +
+                          "  /bj ui      - toggle window\n" +
+                          "  /bj status  - copy current status\n" +
+                          "\nPlayers (party chat):\n" +
+                          "  !bj join\n" +
+                          "  !bj bet <gil>\n" +
+                          "  !bj hit / stand / double\n" +
+                          "  !bj leave\n" +
+                          "\nGil: Players trade to host first. Host confirms in UI before Deal or Double draw."
         });
 
         ChatGui.ChatMessage += OnChatMessage;
