@@ -1,121 +1,192 @@
-﻿using System;
+﻿
+using System;
+using System.Linq;
 using System.Numerics;
-using Dalamud.Bindings.ImGui;
-using Dalamud.Interface.Textures;
-using Dalamud.Interface.Utility;
-using Dalamud.Interface.Utility.Raii;
-using Dalamud.Interface.Windowing;
-using Lumina.Excel.Sheets;
+using System.Text;
+using ImGuiNET;
 
-namespace SamplePlugin.Windows;
-
-public class MainWindow : Window, IDisposable
+namespace PartyBlackjack
 {
-    private readonly string goatImagePath;
-    private readonly Plugin plugin;
-
-    // We give this window a hidden ID using ##.
-    // The user will see "My Amazing Window" as window title,
-    // but for ImGui the ID is "My Amazing Window##With a hidden ID"
-    public MainWindow(Plugin plugin, string goatImagePath)
-        : base("My Amazing Window##With a hidden ID", ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse)
+    public class MainWindow : Window
     {
-        SizeConstraints = new WindowSizeConstraints
+        private readonly BlackjackTable table;
+        private readonly Func<bool> canHost;
+        private readonly Action start;
+        private readonly Action deal;
+        private readonly Action stop;
+        private readonly Func<bool> getAutoOpen;
+        private readonly Action<bool> setAutoOpen;
+
+        public MainWindow(BlackjackTable table, Func<bool> canHost, Action start, Action deal, Action stop,
+            Func<bool> getAutoOpen, Action<bool> setAutoOpen)
+            : base("Party Blackjack###PartyBlackjackMain")
         {
-            MinimumSize = new Vector2(375, 330),
-            MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
-        };
+            this.table = table;
+            this.canHost = canHost;
+            this.start = start;
+            this.deal = deal;
+            this.stop = stop;
+            this.getAutoOpen = getAutoOpen;
+            this.setAutoOpen = setAutoOpen;
 
-        this.goatImagePath = goatImagePath;
-        this.plugin = plugin;
-    }
-
-    public void Dispose() { }
-
-    public override void Draw()
-    {
-        ImGui.Text($"The random config bool is {plugin.Configuration.SomePropertyToBeSavedAndWithADefault}");
-
-        if (ImGui.Button("Show Settings"))
-        {
-            plugin.ToggleConfigUi();
+            SizeConstraints = new WindowSizeConstraints
+            {
+                MinimumSize = new Vector2(520, 400),
+                MaximumSize = new Vector2(1000, 1000)
+            };
         }
 
-        ImGui.Spacing();
-
-        // Normally a BeginChild() would have to be followed by an unconditional EndChild(),
-        // ImRaii takes care of this after the scope ends.
-        // This works for all ImGui functions that require specific handling, examples are BeginTable() or Indent().
-        using (var child = ImRaii.Child("SomeChildWithAScrollbar", Vector2.Zero, true))
+        public override void Draw()
         {
-            // Check if this child is drawing
-            if (child.Success)
+            ImGui.Text(table.TableOpen
+                ? (table.RoundInProgress ? "🟢 Table OPEN (Round Active)" : "🟢 Table OPEN")
+                : "🔴 Table CLOSED");
+
+            bool autoOpen = getAutoOpen();
+            if (ImGui.Checkbox("Auto-open UI on table start", ref autoOpen))
+                setAutoOpen(autoOpen);
+
+            ImGui.Separator();
+
+            bool host = canHost();
+            if (!host)
+                ImGui.TextDisabled("Must be party leader to control table.");
+
+            using var disabledHost = new DisabledScope(!host);
+            if (ImGui.Button("Start Table")) start();
+            ImGui.SameLine();
+            using var disabledTable = new DisabledScope(!table.TableOpen);
+            if (ImGui.Button("Deal Round")) deal();
+            ImGui.SameLine();
+            if (ImGui.Button("Stop Table")) stop();
+
+            if (table.TableOpen)
             {
-                ImGui.Text("Have a goat:");
-                var goatImage = Plugin.TextureProvider.GetFromFile(goatImagePath).GetWrapOrDefault();
-                if (goatImage != null)
+                int expected = table.GetExpectedTotalBet();
+                int received = table.GetTotalReceived();
+                ImGui.SameLine(0, 20);
+                ImGui.TextColored(received >= expected ? new Vector4(0,1,0,1) : new Vector4(1,0.5f,0,1),
+                                  $"Gil: {received}/{expected}");
+            }
+
+            ImGui.Separator();
+
+            if (ImGui.Button("Copy Status")) table.CopyLastPublicMessageToClipboard();
+            ImGui.SameLine();
+            if (ImGui.Button("Copy /p Status")) table.CopyPublicMessageAsPartyCommandToClipboard();
+            ImGui.SameLine();
+            ImGui.TextDisabled($"({table.LastPublicMessage.Length}/180)");
+
+            ImGui.Separator();
+
+            ImGui.Text("Dealer:");
+            DrawHandBlock(table.GetDealerCardsDisplay(), table.GetDealerValueDisplay());
+
+            ImGui.Separator();
+
+            ImGui.Text("Players & Gil Tracking:");
+
+            var snapshots = table.GetPlayersSnapshot()
+                .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (snapshots.Length == 0)
+            {
+                ImGui.TextDisabled("No players yet.");
+                return;
+            }
+
+            foreach (var p in snapshots)
+            {
+                var header = new StringBuilder($"{p.Name}");
+                if (!table.RoundInProgress)
                 {
-                    using (ImRaii.PushIndent(55f))
-                    {
-                        ImGui.Image(goatImage.Handle, goatImage.Size);
-                    }
+                    header.Append($" | Next bet: {p.NextBet}gil | Rec: {p.ReceivedGil}");
                 }
                 else
                 {
-                    ImGui.Text("Image not found.");
+                    header.Append($" | Bet: {p.CurrentBet}gil");
+                    if (p.ReceivedGil > 0) header.Append($" | Rec: {p.ReceivedGil}");
+                }
+                if (p.PendingPayout > 0) header.Append($" | Send: {p.PendingPayout}gil");
+                if (p.SittingOut) header.Append(" | OUT");
+                if (p.Stand) header.Append(" | STAND");
+                if (p.DoublePending) header.Append(" | DOUBLE PENDING");
+
+                ImGui.Text(header.ToString());
+
+                DrawHandBlock(p.HandCardsDisplay ?? "(no hand)", p.HandValueDisplay ?? "");
+
+                // Gil confirmation (pre-deal or between rounds)
+                if (!table.RoundInProgress && table.TableOpen && p.ReceivedGil < p.NextBet)
+                {
+                    int missing = p.NextBet - p.ReceivedGil;
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Mark +{missing}##Rec{p.Name}"))
+                        table.MarkGilReceived(p.Name, missing);
                 }
 
-                ImGuiHelpers.ScaledDummy(20.0f);
+                // Double confirmation during round
+                if (table.RoundInProgress && p.DoublePending)
+                {
+                    ImGui.TextColored(new Vector4(1f, 0.8f, 0f, 1f), "DOUBLE PENDING - confirm extra gil:");
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Confirm Double##ConfDouble{p.Name}"))
+                        table.ConfirmDoubleGilReceived(p.Name);
+                }
 
-                // Example for other services that Dalamud provides.
-                // PlayerState provides a wrapper filled with information about the player character.
+                // Player action buttons (host acts for them)
+                if (table.RoundInProgress && !p.SittingOut && p.CurrentBet > 0 && !p.Stand && !p.DoublePending)
+                {
+                    ImGui.Spacing();
+                    if (ImGui.Button($"Hit##{p.Name}")) table.Hit(p.Name);
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Stand##{p.Name}")) table.Stand(p.Name);
+                    ImGui.SameLine();
+                    bool canDouble = p.HandCardCount == 2;
+                    using var ddDisabled = new DisabledScope(!canDouble);
+                    if (ImGui.Button($"Double##{p.Name}")) table.Double(p.Name);
+                    ImGui.SameLine(0, 5);
+                    ImGui.TextDisabled(canDouble ? "" : "(initial hand only)");
+                }
 
-                var playerState = Plugin.PlayerState;
-                if (!playerState.IsLoaded)
+                // Post-round payout
+                if (!table.RoundInProgress && p.PendingPayout > 0)
                 {
-                    ImGui.Text("Our local player is currently not logged in.");
-                    return;
+                    ImGui.Spacing();
+                    ImGui.TextColored(new Vector4(1f, 1f, 0f, 1f), $"Send {p.PendingPayout}gil to {p.Name}:");
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Trade##T{p.Name}"))
+                        ImGuiNET.ImGui.SetClipboardText($"/trade {p.Name}");
+                    ImGui.SameLine();
+                    if (ImGui.Button($"Sent##S{p.Name}"))
+                        table.ClearPayout(p.Name);  // Add this method if needed: ps.PendingPayout = 0;
                 }
-                
-                if (!playerState.ClassJob.IsValid)
-                {
-                    ImGui.Text("Our current job is currently not valid.");
-                    return;
-                }
-                
-                ImGui.AlignTextToFramePadding();
-                ImGui.Text($"Current job:");
-                
-                // Scaling hardcoded pixel values is important, as otherwise users with HUD scales above or below 100%
-                // won't be able to see everything.
-                ImGui.SameLine(120 * ImGuiHelpers.GlobalScale);
-                
-                // Get the icon id from a known offset + the class jobs id
-                var jobIconId = 62100 + playerState.ClassJob.RowId;
-                var iconTexture = Plugin.TextureProvider.GetFromGameIcon(new GameIconLookup(jobIconId)).GetWrapOrEmpty();
-                ImGui.Image(iconTexture.Handle, new Vector2(28, 28) * ImGuiHelpers.GlobalScale);
-                
-                ImGui.SameLine();
-                
-                // If you want to see the Macro representation of this SeString use `.ToMacroString()`
-                // More info about SeStrings: https://dalamud.dev/plugin-development/sestring/
-                ImGui.Text(playerState.ClassJob.Value.Abbreviation.ToString());
-                
-                ImGui.SameLine();
-                ImGui.Text($" [Level {playerState.Level}]");
-                
-                // Example for querying Lumina, getting the name of our current area.
-                var territoryId = Plugin.ClientState.TerritoryType;
-                if (Plugin.DataManager.GetExcelSheet<TerritoryType>().TryGetRow(territoryId, out var territoryRow))
-                {
-                    ImGui.Text($"Current location:");
-                    ImGui.SameLine(120 * ImGuiHelpers.GlobalScale);
-                    ImGui.Text(territoryRow.PlaceName.Value.Name.ToString());
-                }
-                else
-                {
-                    ImGui.Text("Invalid territory.");
-                }
+
+                ImGui.Spacing();
+            }
+        }
+
+        private static void DrawHandBlock(string cardsText, string valueText)
+        {
+            ImGui.BeginChild($"hand_{cardsText.GetHashCode()}", new Vector2(0, 55), true);
+            ImGui.Text(cardsText);
+            if (!string.IsNullOrEmpty(valueText))
+                ImGui.TextColored(new Vector4(0.8f, 0.8f, 1f, 1f), valueText);
+            ImGui.EndChild();
+        }
+
+        private sealed class DisabledScope : IDisposable
+        {
+            private readonly bool disable;
+            public DisabledScope(bool disable)
+            {
+                this.disable = disable;
+                if (disable) ImGui.BeginDisabled();
+            }
+            public void Dispose()
+            {
+                if (disable) ImGui.EndDisabled();
             }
         }
     }
