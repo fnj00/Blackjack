@@ -41,14 +41,10 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler("/bj", new CommandInfo(OnBjCommand)
         {
-            HelpMessage = "Blackjack host commands (auto-announces to party):\n" +
-                          "  /bj start   - open table + deal round\n" +
-                          "  /bj deal    - deal next round\n" +
-                          "  /bj stop    - close table\n" +
-                          "  /bj status  - copy current status to clipboard\n" +
-                          "  /bj ui      - toggle window\n" +
-                          "\nPlayers: !bj join/bet<hit/stand/double>/leave in party chat\n" +
-                          "Host: Use UI buttons to act for players (auto-announces draws)."
+            HelpMessage = "Host: /bj start/deal/stop/ui/status\n" +
+                          "Players: !bj join/bet<amt>/hit/stand/double/leave (party chat)\n" +
+                          "REAL GIL: Announce bet, trade gil to host pre-deal. Double: trade addl gil.\n" +
+                          "Host trades payouts post-round."
         });
 
         ChatGui.ChatMessage += OnChatMessage;
